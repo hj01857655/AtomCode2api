@@ -44,6 +44,8 @@ type fakeUpstream struct {
 	status  int    // 0 = 200
 	body    string // kind=quota 时的响应体
 	dataPkg bool   // 非流式响应外面多包一层 {"data":{...}}（已知缺陷场景）
+	jsonBody []byte // kind=json 时替换默认样本（工具调用等场景用）
+	streamBody []byte // kind=stream 时替换默认样本
 }
 
 func (f *fakeUpstream) record(r *http.Request, payload map[string]any) {
@@ -81,6 +83,9 @@ func (f *fakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch f.kind {
 	case "json":
 		body := string(chatJSONBytes)
+		if f.jsonBody != nil {
+			body = string(f.jsonBody)
+		}
 		if f.dataPkg {
 			body = `{"data":` + body + `}`
 		}
@@ -94,6 +99,10 @@ func (f *fakeUpstream) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(pseudoStream)
 	default:
 		w.Header().Set("Content-Type", "text/event-stream")
+		if f.streamBody != nil {
+			_, _ = w.Write(f.streamBody)
+			return
+		}
 		_, _ = w.Write(chatStream)
 	}
 }

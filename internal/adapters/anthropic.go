@@ -141,7 +141,36 @@ func plainContentToChat(content any) any {
 	return parts
 }
 
+// prependThinking 把 thinking 文本并入 Chat content（string 或块数组）。
+//
+// 上游不读 reasoning_content，thinking 只能走正文才不丢。thinking 在生成序
+// 上早于正文，所以前置而不是后置。content 是块数组时插一个 text 块，保住
+// 图片等非文本块的位置。
+func prependThinking(content any, thinkTxt string) any {
+	if thinkTxt == "" {
+		return content
+	}
+	if s, ok := content.(string); ok {
+		if s == "" {
+			return thinkTxt
+		}
+		return thinkTxt + "\n\n" + s
+	}
+	parts, ok := content.([]any)
+	if !ok {
+		return thinkTxt
+	}
+	out := make([]any, 0, len(parts)+1)
+	out = append(out, map[string]any{"type": "text", "text": thinkTxt})
+	out = append(out, parts...)
+	return out
+}
+
 // toolResultContentToStr tool_result.content（str 或块数组）-> 单个字符串。
+//
+// 块之间用换行连接而非空串：块边界就是语义边界，空串拼接会让
+// [{text:"The answer is"},{text:"42"}] 变成 "The answer is42"，
+// 上游把相邻块当成一个词。换行在纯文本里不会引入额外语义。
 func toolResultContentToStr(out any) string {
 	if s, ok := out.(string); ok {
 		return s
@@ -155,12 +184,29 @@ func toolResultContentToStr(out any) string {
 				segs = append(segs, asString(m["text"]))
 			}
 		}
-		return strings.Join(segs, "")
+		return strings.Join(segs, "\n")
 	}
 	if out == nil {
 		return ""
 	}
 	return string(marshalCompact(out))
+}
+
+// toolResultToChat user.tool_result 块 -> Chat role=tool 消息。
+//
+// is_error 在 Chat 协议里没有对应字段，但它是模型判断「工具失败」的
+// 结构化信号，直接丢弃会让模型把失败结果当正常数据继续推理（错误
+// 内容里没有 error 字样时尤其危险）。这里编码进 content 前缀。
+func toolResultToChat(tr map[string]any) map[string]any {
+	content := toolResultContentToStr(tr["content"])
+	if b, ok := tr["is_error"].(bool); ok && b {
+		content = "[tool error] " + content
+	}
+	return map[string]any{
+		"role":         "tool",
+		"tool_call_id": asString(tr["tool_use_id"]),
+		"content":      content,
+	}
 }
 
 // anthropicMessagesToChat Anthropic system + messages -> Chat messages。
@@ -213,6 +259,7 @@ func anthropicMessagesToChat(body map[string]any) []any {
 
 		var toolUses, toolResults []map[string]any
 		textSegs := []string{}
+		thinkSegs := []string{}
 		for _, bi := range content {
 			if s, ok := bi.(string); ok {
 				textSegs = append(textSegs, s)
@@ -225,6 +272,13 @@ func anthropicMessagesToChat(body map[string]any) []any {
 			switch asString(b["type"]) {
 			case "text":
 				textSegs = append(textSegs, asString(b["text"]))
+			case "thinking":
+				// thinking -> reasoning_content：Chat 侧语义对等的推理通道。
+				// signature 不参与翻译——它是 Anthropic 的加密推理副本，
+				// 上游只认文本，带上反而是无意义字段。
+				if t := asString(b["thinking"]); t != "" {
+					thinkSegs = append(thinkSegs, t)
+				}
 			case "tool_use":
 				toolUses = append(toolUses, b)
 			case "tool_result":
@@ -232,16 +286,23 @@ func anthropicMessagesToChat(body map[string]any) []any {
 			}
 		}
 		textTxt := strings.Join(textSegs, " ")
+		// thinking 在上游没有对等通道：实测 glm5.3-flash 与 qwen3.8-27b 都
+		// 不读 assistant.reasoning_content（随机码回传 4 次全未命中，另试
+		// reasoning / thinking / provider_specific_fields 三种字段名同样不认）。
+		// 并入正文是唯一能保住推理连续性的做法——工具调用轮次丢了思考，
+		// 模型会重复调用或接不上自己的推理。thinking 发生在输出之前，前置。
+		if thinkTxt := strings.Join(thinkSegs, "\n\n"); thinkTxt != "" {
+			if textTxt != "" {
+				textTxt = thinkTxt + "\n\n" + textTxt
+			} else {
+				textTxt = thinkTxt
+			}
+		}
 
 		if len(toolResults) > 0 {
 			// user 回工具结果：每条 tool_result -> role=tool；余下文本另起 user
 			for _, tr := range toolResults {
-				id := asString(tr["tool_use_id"])
-				messages = append(messages, map[string]any{
-					"role":         "tool",
-					"tool_call_id": id,
-					"content":      toolResultContentToStr(tr["content"]),
-				})
+				messages = append(messages, toolResultToChat(tr))
 			}
 			if textTxt != "" {
 				messages = append(messages, map[string]any{"role": "user", "content": textTxt})
@@ -276,7 +337,10 @@ func anthropicMessagesToChat(body map[string]any) []any {
 				"tool_calls": tcList,
 			})
 		} else {
-			messages = append(messages, map[string]any{"role": role, "content": plainContentToChat(content)})
+			messages = append(messages, map[string]any{
+				"role":    role,
+				"content": prependThinking(plainContentToChat(content), strings.Join(thinkSegs, "\n\n")),
+			})
 		}
 	}
 	return messages
@@ -372,6 +436,32 @@ func AnthropicToChat(body map[string]any) map[string]any {
 // 二、响应侧公共
 // ════════════════════════════════════════════════════════════════════════════
 
+// thinkingSigMarker 网关自签的 thinking signature。
+//
+// Anthropic 协议要求 thinking 块带 signature 才能回传，而上游只给
+// reasoning_content、不给签名。这里签发一个固定标记（base64，解码后是
+// "atomcode-reasoning-v1"）：只有本网关会读它，回传时认出来就还原成
+// reasoning_content，不需要通过任何签名校验。
+//
+// 不用空串：空 signature + 有文本的 thinking 块在不少客户端里会被当成
+// 占位块丢弃（判据是「签名空且文本空才算占位」，有文本反而落进「签名
+// 无效」分支），显式标记能保证往返稳定。
+const thinkingSigMarker = "EYXRvbWNvZGUtcmVhc29uaW5nLXYx"
+
+// reasoningThinkingBlock Chat message.reasoning_content -> Anthropic thinking 块。
+// 无 reasoning 时返回 nil。
+func reasoningThinkingBlock(msg map[string]any) map[string]any {
+	txt := asString(msg["reasoning_content"])
+	if txt == "" {
+		return nil
+	}
+	return map[string]any{
+		"type":      "thinking",
+		"thinking":  txt,
+		"signature": thinkingSigMarker,
+	}
+}
+
 // StopReasonFor Chat finish_reason -> Anthropic stop_reason。
 func StopReasonFor(finish string) string {
 	switch finish {
@@ -451,6 +541,11 @@ func ChatJSONToAnthropic(chat map[string]any, model string) map[string]any {
 	}
 
 	contentBlocks := []any{}
+	// thinking 块必须排在 text 之前：Anthropic 的块序就是生成序，
+	// 客户端（Claude Code 等）按位置渲染思考面板。
+	if th := reasoningThinkingBlock(msg); th != nil {
+		contentBlocks = append(contentBlocks, th)
+	}
 	if text := asString(msg["content"]); text != "" {
 		contentBlocks = append(contentBlocks, map[string]any{"type": "text", "text": text})
 	}
@@ -525,10 +620,34 @@ func ChatSSEToAnthropic(lines iter.Seq[string], model string) iter.Seq[[]byte] {
 			"cache_creation_input_tokens": 0, "cache_read_input_tokens": 0,
 		}
 		blocks := 0                 // 已开出的 content block 数
+		thinkIdx := -1              // 当前打开的 thinking 块下标（-1 = 没有打开的）
 		textIdx := -1               // 文本块下标（-1 = 还没开）
 		toolBlocks := map[int]int{} // chat tool_calls.index -> blocks 下标
+		closed := map[int]bool{}    // 已发过 content_block_stop 的下标
 		finish := ""
 		var usage map[string]any
+
+		// closeThinking 给当前 thinking 块发 signature_delta + content_block_stop。
+		//
+		// Anthropic 的块序要求签名落在块停止之前，且正文/工具块不能插在
+		// 思考块中间——所以 thinking 必须在下一个块开出前封口。
+		closeThinking := func() bool {
+			if thinkIdx < 0 {
+				return true
+			}
+			if !yield(antFrame("content_block_delta", map[string]any{
+				"index": thinkIdx,
+				"delta": map[string]any{"type": "signature_delta", "signature": thinkingSigMarker},
+			})) {
+				return false
+			}
+			if !yield(antFrame("content_block_stop", map[string]any{"index": thinkIdx})) {
+				return false
+			}
+			closed[thinkIdx] = true
+			thinkIdx = -1
+			return true
+		}
 
 		yield(antFrame("message_start", map[string]any{"message": map[string]any{
 			"id": msgID, "type": "message", "role": "assistant", "content": []any{},
@@ -548,9 +667,38 @@ func ChatSSEToAnthropic(lines iter.Seq[string], model string) iter.Seq[[]byte] {
 			}
 			finish = pickFinish(chunk, finish)
 
+			// 0) reasoning delta -> thinking 块
+			//
+			// 上游通常先吐 reasoning 再吐正文，但没有协议保证。若正文已
+			// 开块后又来 reasoning（少见），这里新开一个 thinking 块排在
+			// 后面——Anthropic 的块序即生成序，靠后但不丢内容。
+			if rc := chunk.reasoningContent; rc != "" {
+				if thinkIdx < 0 {
+					thinkIdx = blocks
+					blocks++
+					if !yield(antFrame("content_block_start", map[string]any{
+						"index": thinkIdx,
+						"content_block": map[string]any{
+							"type": "thinking", "thinking": "", "signature": "",
+						},
+					})) {
+						return
+					}
+				}
+				if !yield(antFrame("content_block_delta", map[string]any{
+					"index": thinkIdx,
+					"delta": map[string]any{"type": "thinking_delta", "thinking": rc},
+				})) {
+					return
+				}
+			}
+
 			// 1) 文本 delta
 			if ct := chunk.content; ct != "" {
 				if textIdx < 0 {
+					if !closeThinking() {
+						return
+					}
 					textIdx = blocks
 					blocks++
 					if !yield(antFrame("content_block_start", map[string]any{
@@ -572,6 +720,9 @@ func ChatSSEToAnthropic(lines iter.Seq[string], model string) iter.Seq[[]byte] {
 			for _, tc := range chunk.toolCalls {
 				bidx, ok := toolBlocks[tc.index]
 				if !ok {
+					if !closeThinking() {
+						return
+					}
 					bidx = blocks
 					blocks++
 					callID := tc.id
@@ -599,7 +750,14 @@ func ChatSSEToAnthropic(lines iter.Seq[string], model string) iter.Seq[[]byte] {
 			}
 		}
 
+		// 收尾：还没封口的 thinking（整条回复只有思考）在这里封。
+		if !closeThinking() {
+			return
+		}
 		for idx := 0; idx < blocks; idx++ {
+			if closed[idx] {
+				continue
+			}
 			if !yield(antFrame("content_block_stop", map[string]any{"index": idx})) {
 				return
 			}
@@ -625,6 +783,7 @@ func ChatSSEToAnthropic(lines iter.Seq[string], model string) iter.Seq[[]byte] {
 // ChatJSONToAnthropic 翻成 Anthropic Message。
 func AggregateChatSSE(lines iter.Seq[string], model string) map[string]any {
 	content := []string{}
+	reasoning := []string{}
 	type callState struct {
 		id, name, arguments string
 	}
@@ -658,6 +817,9 @@ func AggregateChatSSE(lines iter.Seq[string], model string) map[string]any {
 		if chunk.content != "" {
 			content = append(content, chunk.content)
 		}
+		if chunk.reasoningContent != "" {
+			reasoning = append(reasoning, chunk.reasoningContent)
+		}
 		for _, tc := range chunk.toolCalls {
 			st, ok := toolCalls[tc.index]
 			if !ok {
@@ -681,6 +843,9 @@ func AggregateChatSSE(lines iter.Seq[string], model string) map[string]any {
 		contentVal = joined
 	}
 	msg := map[string]any{"role": "assistant", "content": contentVal}
+	if r := strings.Join(reasoning, ""); r != "" {
+		msg["reasoning_content"] = r
+	}
 	if len(callOrder) > 0 {
 		tcs := make([]any, 0, len(callOrder))
 		for _, i := range callOrder {
@@ -740,6 +905,22 @@ func ChatJSONToAnthropicSSE(chatJSON map[string]any, model string) iter.Seq[[]by
 				continue
 			}
 			switch asString(block["type"]) {
+			case "thinking":
+				yield(antFrame("content_block_start", map[string]any{
+					"index": idx,
+					"content_block": map[string]any{
+						"type": "thinking", "thinking": "", "signature": "",
+					},
+				}))
+				yield(antFrame("content_block_delta", map[string]any{
+					"index": idx,
+					"delta": map[string]any{"type": "thinking_delta", "thinking": block["thinking"]},
+				}))
+				yield(antFrame("content_block_delta", map[string]any{
+					"index": idx,
+					"delta": map[string]any{"type": "signature_delta", "signature": thinkingSigMarker},
+				}))
+				yield(antFrame("content_block_stop", map[string]any{"index": idx}))
 			case "text":
 				yield(antFrame("content_block_start", map[string]any{
 					"index": idx, "content_block": map[string]any{"type": "text", "text": ""},
