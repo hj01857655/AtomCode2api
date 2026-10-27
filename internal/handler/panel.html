@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AtomCode2api</title>
+<style>
+:root{--bg:#0f1115;--card:#181b22;--line:#262b36;--tx:#e6e9ef;--dim:#8b93a3;--ok:#4ade80;--bad:#f87171;--warn:#fbbf24;--acc:#6ea8fe}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--tx);font:14px/1.6 "Segoe UI",system-ui,sans-serif}
+.wrap{max-width:980px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:18px;margin:0 0 4px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:16px;flex-wrap:wrap}
+.tabs button{background:none;border:none;color:var(--dim);padding:8px 14px;cursor:pointer;font-size:14px;border-bottom:2px solid transparent}
+.tabs button.on{color:var(--acc);border-bottom-color:var(--acc)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+.card h3{margin:0 0 10px;font-size:14px}
+.kv{display:grid;grid-template-columns:110px 1fr;gap:4px 12px;font-size:13px}
+.kv b{color:var(--dim);font-weight:400}
+button{background:var(--acc);border:none;border-radius:6px;color:#0b1220;padding:7px 14px;cursor:pointer;font-size:13px;font-weight:600}
+button.ghost{background:none;border:1px solid var(--line);color:var(--tx);font-weight:400}
+button:disabled{opacity:.45;cursor:default}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line)}
+th{color:var(--dim);font-weight:400}
+.ok{color:var(--ok)}.bad{color:var(--bad)}.warn{color:var(--warn)}.dim{color:var(--dim)}
+.badge{display:inline-block;border-radius:99px;padding:1px 9px;font-size:11px;font-weight:600}
+.badge.on{background:#14321f;color:var(--ok)}.badge.off{background:#321414;color:var(--bad)}
+.mono{font-family:Consolas,monospace;font-size:12px}
+.bar{display:block;height:8px;border-radius:99px;background:#0d0f13;border:1px solid var(--line);overflow:hidden;margin:6px 0}
+.bar i{display:block;height:100%;background:var(--acc)}
+.bar i.hot{background:var(--warn)}
+#msg{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:#1f2430;border:1px solid var(--line);border-radius:8px;padding:10px 18px;font-size:13px;display:none;max-width:80vw}
+input{background:#0d0f13;border:1px solid var(--line);border-radius:6px;color:var(--tx);padding:7px 10px;font-size:13px;width:180px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>AtomCode2api 控制台</h1>
+<div class="tabs">
+<button class="on" onclick="tab(this,'vMain')">概览</button>
+<button onclick="tab(this,'vModels')">模型</button>
+<button onclick="tab(this,'vDiag')">诊断</button>
+</div>
+<div id="vMain"></div>
+<div id="vModels" style="display:none"></div>
+<div id="vDiag" style="display:none"></div>
+</div>
+<div id="msg"></div>
+<script>
+"use strict";
+const $=s=>document.querySelector(s);
+function authHeaders(){const k=localStorage.ac_apikey;if(!k)return{"Content-Type":"application/json"};return{"Content-Type":"application/json","Authorization":"Bearer "+k}}
+const api=(p,opt={})=>fetch(p,Object.assign({headers:authHeaders()},opt)).then(r=>r.json()).catch(e=>({error:String(e)}));
+const POST=p=>api(p,{method:"POST",body:"{}"});
+let tt;function toast(t,bad){const m=$("#msg");m.textContent=t;m.style.display="block";m.style.color=bad?"var(--bad)":"var(--tx)";clearTimeout(tt);tt=setTimeout(()=>m.style.display="none",3500)}
+function esc(s){const d=document.createElement("div");d.textContent=s==null?"":String(s);return d.innerHTML}
+function tab(btn,id){document.querySelectorAll(".tabs button").forEach(b=>b.classList.remove("on"));btn.classList.add("on");
+  ["vMain","vModels","vDiag"].forEach(v=>$("#"+v).style.display=v===id?"":"none")}
+// 时间值兼容 unix 秒（数字或数字字符串）与上游原样字符串
+function fmtTime(v){if(v==null||v==="")return "—";const n=Number(v);if(Number.isFinite(n)&&n>1e9){const d=new Date(n*1000);return d.toLocaleString("zh-CN",{hour12:false})}return String(v)}
+function fmtDur(sec){const n=Number(sec);if(!Number.isFinite(n))return "—";const h=Math.floor(n/3600),m=Math.floor(n%3600/60),s=Math.round(n%60);return (h?h+"时":"")+(m?m+"分":"")+s+"秒"}
+function fmtTok(n){const x=Number(n);return Number.isFinite(x)?x.toLocaleString("zh-CN"):"—"}
+
+
+let OV=null;
+async function load(){
+  const o=await api("/admin/api/overview");
+  if(!o||!o.credential){$("#vMain").innerHTML='<div class="card bad">overview 加载失败：'+esc(o&&o.error||"")+'</div>';return}
+  OV=o;
+  const c=o.credential;
+  const pct=(c.window_limit>0)?Math.min(100,Math.round(c.window_used/c.window_limit*100)):null;
+  $("#vMain").innerHTML=`
+  <div class="card"><h3>凭据</h3><div class="kv">
+    <b>状态</b><span class="${c.valid?"ok":"bad"}">${c.valid?"有效":"未登录——先跑官方 <code>atomcode login</code>，或 <a class="mono" href="/login">GET /login</a> 走网关 OAuth"}</span>
+    ${c.valid?`
+    <b>用户</b><span>${esc(c.username||"—")} <span class="dim mono">${esc(c.uid||"")}</span></span>
+    <b>套餐</b><span>${esc(c.plan||"—")} <span class="dim">${esc(c.status||"")}</span></span>
+    <b>套餐到期</b><span>${esc(fmtTime(c.expires_at))}${c.remaining_days!=null?` <span class="dim">（剩 ${esc(c.remaining_days)} 天）</span>`:""}</span>
+    <b>token 到期</b><span>${esc(fmtTime(c.token_expires_at))}</span>`:""}
+    <b>本地鉴权</b><span>${o.local_auth?`<span class="badge on">API_KEY 已开启</span> <input id="k" placeholder="API Key" value="${esc(localStorage.ac_apikey||"")}"> <button class="ghost" onclick="localStorage.ac_apikey=document.getElementById('k').value;toast('已保存')">保存</button>`:'<span class="badge off">未开启（仅回环）</span>'}</span>
+  </div></div>
+  ${c.valid?`<div class="card"><h3>5h 窗口水位</h3><div class="kv">
+    <b>已用 / 上限</b><span>${esc(fmtTok(c.window_used))} / ${esc(fmtTok(c.window_limit))}${pct!=null?` <span class="dim">（${pct}%）</span>`:""}</span>
+    <b>水位</b><span class="bar" style="grid-column:2"><i class="${pct>=80?"hot":""}" style="width:${pct!=null?pct:0}%"></i></span>
+    <b>重置时间</b><span>${esc(fmtTime(c.window_reset))}${c.seconds_until_reset!=null?` <span class="dim">（${esc(fmtDur(c.seconds_until_reset))}后）</span>`:""}</span>
+  </div>
+  <div class="dim" style="font-size:12px;margin-top:8px">注：status-v2 只描述官方客户端路径的窗口状态；网关反代路径不被窗口硬闸拦，勿以此判断可用性。</div></div>`:""}`;
+  $("#vModels").innerHTML=`
+  <div class="card"><h3>模型 ${o.models&&o.models.length?`<span class="dim">（${o.models.length} 个）</span>`:""}</h3>
+  <table><tr><th>模型</th><th>来源</th></tr>
+  ${(o.models||[]).map(m=>`<tr><td class="mono">${esc(m.id)}</td><td class="dim">${esc(m.owned_by||"—")}</td></tr>`).join("")||'<tr><td colspan="2" class="dim">无（未登录或目录拉取失败）</td></tr>'}</table></div>`;
+  $("#vDiag").innerHTML=`
+  <div class="card"><h3>健康检查</h3><button class="ghost" onclick="doHealth(this)">GET /health</button> <span id="hpOut"></span></div>
+  <div class="card"><h3>凭据</h3><button onclick="doRefresh(this)">刷新令牌</button> <span id="rfOut"></span></div>`;
+}
+async function doRefresh(btn){btn.disabled=true;const r=await POST("/admin/api/refresh-token");
+  $("#rfOut").innerHTML=`<span class="${r.ok?"ok":"bad"}">${esc(r.message||"")}</span>`;btn.disabled=false;if(r.ok)load()}
+async function doHealth(btn){btn.disabled=true;
+  try{const r=await fetch("/health");const j=await r.json();
+    $("#hpOut").innerHTML=`<span class="${r.ok?"ok":"bad"}">${r.ok?"ok":"HTTP "+r.status} ${esc(JSON.stringify(j))}</span>`}
+  catch(e){$("#hpOut").innerHTML='<span class="bad">'+esc(String(e))+'</span>'}
+  btn.disabled=false}
+load();
+</script>
+</body>
+</html>

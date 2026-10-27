@@ -146,6 +146,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/login/poll", s.loginPoll)
 	mux.HandleFunc("/health", s.health)
 	mux.HandleFunc("/status", s.status)
+	mux.HandleFunc("/admin", s.servePanel)
+	mux.HandleFunc("/admin/api/overview", s.overview)
+	mux.HandleFunc("/admin/api/refresh-token", s.adminRefresh)
 	return mux
 }
 
@@ -192,11 +195,21 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	if !s.guard(w, r) || !s.credGuard(w) {
 		return
 	}
+	st := s.quotaStatus()
+	if st == nil {
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "无法获取状态"})
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+// quotaStatus 拉 status-v2 并整形成 /status 的输出形状；拉不到（网络失败 /
+// 上游空响应）返回 nil。/status 与 /admin/api/overview 共用。
+func (s *Server) quotaStatus() map[string]any {
 	st := s.Con.Status(s)
 	// Python: if not s → 空 dict / None 都算失败
 	if len(st) == 0 {
-		writeJSON(w, http.StatusBadGateway, map[string]any{"error": "无法获取状态"})
-		return
+		return nil
 	}
 	free := asMap(st["codingplan_free"])
 	usage := asMap(st["current_usage"])
@@ -206,7 +219,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 	if usage == nil {
 		usage = map[string]any{}
 	}
-	writeJSON(w, http.StatusOK, map[string]any{
+	return map[string]any{
 		"plan":                free["plan_name"],
 		"status":              free["status"],
 		"claimed_at":          free["claimed_at"],
@@ -216,7 +229,7 @@ func (s *Server) status(w http.ResponseWriter, r *http.Request) {
 		"window_limit":        usage["window_token_limit"],
 		"window_reset":        usage["reset_at"],
 		"seconds_until_reset": usage["seconds_until_reset"],
-	})
+	}
 }
 
 // ── /login、/login/poll：网关自建 OAuth（平台代持流）────────────────────────

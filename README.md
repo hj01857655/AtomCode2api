@@ -27,11 +27,15 @@ go build -o atomcode2api .
 ## 接口
 
 - `GET /health` — 健康检查
+- `GET /status` — 套餐状态（套餐名 / 5h 窗口水位 / 到期时间）
 - `GET /v1/models` — 模型列表
 - `POST /v1/chat/completions` — OpenAI Chat 兼容
 - `POST /v1/messages` — Anthropic Messages 兼容
 - `POST /v1/responses` — OpenAI Responses 兼容
 - `GET /login`、`GET /login/poll` — 凭据登录与轮询
+- `GET /admin` — Web 管理面板（内置，开箱即用）：凭据状态、套餐与 5h 窗口水位、模型列表、健康检查与令牌刷新。状态目录放一份自定义 `panel.html` 可覆盖内置版
+
+`/admin/api/*` 面板后端：`overview`（凭据 + 套餐 + 模型概览）/ `refresh-token`（强制刷新当前凭据并写回 auth.toml）。
 
 ## Docker 部署
 
@@ -41,6 +45,6 @@ cp .env.example .env   # 按需填写
 docker compose up -d
 ```
 
-镜像同时发布到 GHCR：`ghcr.io/hj01857655/hj01857655/AtomCode2api`（跟随 v* 标签发布，含 latest，linux/amd64 + linux/arm64）。
+镜像同时发布到 GHCR：`ghcr.io/hj01857655/atomcode2api`（跟随 v* 标签发布，含 latest，linux/amd64 + linux/arm64）。
 
 二进制发版：推送 `v*` 标签后 Actions 自动构建 linux / windows / darwin 的 amd64 + arm64 六平台产物并发布 Release。
