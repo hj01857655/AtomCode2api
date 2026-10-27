@@ -85,7 +85,8 @@ type creds struct {
 // 进程内加锁串行 + 锁内重读文件：若官方 CLI 已抢先刷新（RT 轮换），直接用文件里的
 // 新凭据，不再重复刷新，避免并发双刷互杀。
 type Credential struct {
-	path string
+	path     string // auth.toml（IDE 共享源，只读迁移用）
+	jsonPath string // 网关自己的凭据文件（StateDir/auth.json，刷新产物落这里）
 
 	accessToken  string
 	refreshToken string
@@ -114,7 +115,7 @@ func (c *Credential) refreshURL() string {
 }
 
 // NewCredential 装载 auth.toml；文件缺失返回 ErrNotLoggedIn。
-func NewCredential(path string, logger *slog.Logger) (*Credential, error) {
+func NewCredential(path, jsonPath string, logger *slog.Logger) (*Credential, error) {
 	if path == "" {
 		path = AuthTOMLPath()
 	}
@@ -122,9 +123,10 @@ func NewCredential(path string, logger *slog.Logger) (*Credential, error) {
 		logger = slog.Default()
 	}
 	c := &Credential{
-		path: path,
-		log:  logger,
-		HTTP: &http.Client{Timeout: reqTimeout},
+		path:     path,
+		jsonPath: jsonPath,
+		log:      logger,
+		HTTP:     &http.Client{Timeout: reqTimeout},
 	}
 	if err := c.load(); err != nil {
 		return nil, err
@@ -135,6 +137,22 @@ func NewCredential(path string, logger *slog.Logger) (*Credential, error) {
 // load 读并解析 auth.toml；读坏（非缺失/非解析错）时保留当前内存凭据。
 // 对应 Python _load + _parse_auth_toml：文件缺失→ErrNotLoggedIn，读坏→保留旧值。
 func (c *Credential) load() error {
+	// 统一后网关凭据源 = StateDir/auth.json（独立 RT 链）；auth.toml 降级为首次迁移源
+	if c.jsonPath != "" {
+		if raw, err := os.ReadFile(c.jsonPath); err == nil {
+			if data, perr := parseAuthJSON(raw); perr == nil {
+				c.accessToken = data.AccessToken
+				c.refreshToken = data.RefreshToken
+				c.expiresAt = data.CreatedAt + data.ExpiresIn
+				c.userID = data.User.ID
+				c.username = data.User.Username
+				if mt, err := os.Stat(c.jsonPath); err == nil {
+					c.mtime = mt.ModTime()
+				}
+				return nil
+			}
+		}
+	}
 	raw, err := os.ReadFile(c.path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -312,10 +330,14 @@ type SaveCreds struct {
 	HasUser      bool
 }
 
-// Save 原子写 auth.toml：凭据键逐行替换（或追加），其余内容原样保留。
-// 对应 Python save_credentials + _write_auth_toml。
+// Save 原子写 StateDir/auth.json（网关独立凭据文件，0600）。
+// 不再回写 auth.toml：RT 轮换后写回会让官方 CLI 的旧 RT 作废（双杀）。
+// IDE 掉线时重登官方 CLI 即可，网关凭据不受影响。
 func (c *Credential) save(sc SaveCreds) error {
-	return SaveAuthTOML(c.path, sc)
+	if c.jsonPath == "" {
+		return SaveAuthTOML(c.path, sc)
+	}
+	return SaveAuthJSON(c.jsonPath, sc)
 }
 
 // SaveCredentials 独立写凭据到 auth.toml（/login/poll 完成交换后用，无需已装载的 Credential）。
@@ -325,6 +347,44 @@ func SaveCredentials(path string, sc SaveCreds) error {
 		path = AuthTOMLPath()
 	}
 	return SaveAuthTOML(path, sc)
+}
+
+// SaveAuthJSON 网关独立凭据文件（0600，原子替换）。
+func SaveAuthJSON(path string, sc SaveCreds) error {
+	b, err := json.MarshalIndent(map[string]any{
+		"access_token":  sc.AccessToken,
+		"token_type":    orDefault(sc.TokenType, "Bearer"),
+		"refresh_token": sc.RefreshToken,
+		"expires_in":    sc.ExpiresIn,
+		"created_at":    sc.CreatedAt,
+		"saved_at":      time.Now().Format(time.RFC3339),
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// parseAuthJSON 解析 auth.json。
+func parseAuthJSON(raw []byte) (creds, error) {
+	var data struct {
+		AccessToken  string `json:"access_token"`
+		TokenType    string `json:"token_type"`
+		RefreshToken string `json:"refresh_token"`
+		ExpiresIn    int64  `json:"expires_in"`
+		CreatedAt    int64  `json:"created_at"`
+		User         User   `json:"user"`
+	}
+	if err := json.Unmarshal(raw, &data); err != nil {
+		return creds{}, err
+	}
+	return creds{AccessToken: data.AccessToken, TokenType: data.TokenType,
+		RefreshToken: data.RefreshToken, ExpiresIn: data.ExpiresIn,
+		CreatedAt: data.CreatedAt, HasUser: data.User.ID != "", User: data.User}, nil
 }
 
 // SaveAuthTOML 行级替换 auth.toml 顶层凭据键，保留其它一切（含 [user] 表原样）。

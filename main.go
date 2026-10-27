@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -43,10 +44,11 @@ func main() {
 	slog.SetDefault(logger)
 
 	s := handler.New(cfg, nil, logger)
-	s.AuthTOML = credPath // 空串时 lanes 内部回落到默认路径
+	s.AuthTOML = credPath                                 // 空串时 lanes 内部回落到默认路径
+	s.AuthJSON = filepath.Join(cfg.StateDir, "auth.json") // 网关独立凭据文件（刷新/登录产物）
 
 	// 对应 Python __main__ 的凭据装载分支
-	cred, err := lanes.NewCredential(s.AuthTOML, logger)
+	cred, err := lanes.NewCredential(s.AuthTOML, s.AuthJSON, logger)
 	if err != nil {
 		if errors.Is(err, lanes.ErrNotLoggedIn) {
 			logger.Warn("尚未登录，CodingPlan 路由不可用——GET /login 开始 OAuth 登录（OpenRouter 路由不受影响）")

@@ -114,7 +114,7 @@ func newFixture(t *testing.T, kind string) *fixture {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Host: "127.0.0.1", Port: 8788, StateDir: t.TempDir()}
-	cred, err := lanes.NewCredential(newAuthTOML(t), logger)
+	cred, err := lanes.NewCredential(newAuthTOML(t), newAuthTOML(t)+".json", logger)
 	if err != nil {
 		t.Fatalf("凭据装载失败: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestControlEndpoints(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Host: "127.0.0.1", Port: 8788, StateDir: t.TempDir()}
-	cred, err := lanes.NewCredential(newAuthTOML(t), logger)
+	cred, err := lanes.NewCredential(newAuthTOML(t), newAuthTOML(t)+".json", logger)
 	if err != nil {
 		t.Fatal(err)
 	}

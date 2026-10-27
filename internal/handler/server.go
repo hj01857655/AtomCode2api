@@ -47,6 +47,9 @@ type Server struct {
 
 	// AuthTOML 凭据文件路径（默认 ~/.atomcode/auth.toml，测试指向临时目录）。
 	AuthTOML string
+	// AuthJSON 网关独立凭据文件（StateDir/auth.json）：刷新/登录产物落这里，
+	// 加载时优先于 auth.toml（独立 RT 链，不再回写 IDE 共享文件）。
+	AuthJSON string
 }
 
 // New 构造服务。cred 可为 nil（未登录）。
@@ -265,7 +268,7 @@ func (s *Server) loginPoll(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
 		return
 	}
-	nc, err := lanes.NewCredential(s.AuthTOML, s.Log) // 用新凭据重建（load 读 auth.toml）
+	nc, err := lanes.NewCredential(s.AuthTOML, s.AuthJSON, s.Log) // 双源重建（auth.json 优先）
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": "error", "message": err.Error()})
 		return
@@ -275,14 +278,16 @@ func (s *Server) loginPoll(w http.ResponseWriter, r *http.Request) {
 		"status":   "done",
 		"username": creds.User.Username,
 		"uid":      creds.User.IDStr(),
-		"message":  "登录成功，凭据已写入 ~/.atomcode/auth.toml，网关已切换到新凭据",
+		"message":  "登录成功，凭据已写入 auth.json，网关已切换到新凭据",
 	})
 }
 
-// saveCreds 落盘新凭据（/login/poll 完成交换后）。Python 版 save_credentials()
-// 固定写 ~/.atomcode/auth.toml；这里同一路径，除非测试用 AuthTOML 指到临时文件。
+// saveCreds 落盘新凭据到网关独立凭据文件 auth.json（不再写 auth.toml）。
 func (s *Server) saveCreds(sc lanes.SaveCreds) error {
-	return lanes.SaveCredentials(s.AuthTOML, sc)
+	if s.AuthJSON == "" {
+		s.AuthJSON = filepath.Join(s.Cfg.StateDir, "auth.json")
+	}
+	return lanes.SaveAuthJSON(s.AuthJSON, sc)
 }
 
 // logIn 出 in: 行（对应 routes/chat.py 的 logger.info("[%s] in: ...")；

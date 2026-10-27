@@ -83,7 +83,7 @@ func TestRefreshRotatesAndPersists(t *testing.T) {
 	defer srv.Close()
 
 	path := tempAuthTOML(t, "old-at", "old-rt")
-	c, err := NewCredential(path, quietLogger())
+	c, err := NewCredential(path, path+".json", quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -98,19 +98,22 @@ func TestRefreshRotatesAndPersists(t *testing.T) {
 	if delta := c.ExpiresAt() - time.Now().Unix(); delta < 7100 || delta > 7200 {
 		t.Errorf("expiresAt 偏移=%d，期望 ~7200", delta)
 	}
-	// 已写回文件
-	raw, _ := os.ReadFile(path)
-	if !strings.Contains(string(raw), `access_token = "new-at"`) ||
-		!strings.Contains(string(raw), `refresh_token = "new-rt"`) {
-		t.Errorf("auth.toml 未写回:\n%s", raw)
+	// 新语义：刷新产物落 auth.json（网关独立凭据文件），auth.toml 保持原样不写回
+	jraw, _ := os.ReadFile(path + ".json")
+	var saved map[string]any
+	if err := json.Unmarshal(jraw, &saved); err != nil {
+		t.Fatalf("auth.json 解析失败: %v\nraw=%s", err, jraw)
 	}
-	// [user] 表原样保留
-	if !strings.Contains(string(raw), "[user]") || !strings.Contains(string(raw), `username = "tester"`) {
-		t.Errorf("[user] 表被破坏:\n%s", raw)
+	if saved["access_token"] != "new-at" || saved["refresh_token"] != "new-rt" {
+		t.Fatalf("auth.json 未写回新凭据: %v", saved)
 	}
-	// expires_in 被替换为响应值
-	if !strings.Contains(string(raw), "expires_in = 7200") {
-		t.Errorf("expires_in 未更新:\n%s", raw)
+	tomlRaw, _ := os.ReadFile(path)
+	if !strings.Contains(string(tomlRaw), `access_token = "old-at"`) {
+		t.Errorf("auth.toml 不应被写回:\n%s", tomlRaw)
+	}
+	// expires_in 用响应值（7200），落在 auth.json
+	if saved["expires_in"] != float64(7200) {
+		t.Errorf("expires_in 应为 7200, got %v", saved["expires_in"])
 	}
 	if n := atomic.LoadInt32(&hits); n != 1 {
 		t.Errorf("刷新端点被打 %d 次，期望 1", n)
@@ -128,7 +131,7 @@ func TestRefreshSkipsWhenFileAlreadyRotated(t *testing.T) {
 	defer srv.Close()
 
 	path := tempAuthTOML(t, "old-at", "old-rt")
-	c, err := NewCredential(path, quietLogger())
+	c, err := NewCredential(path, path+".json", quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,7 +163,7 @@ func TestConcurrentRefreshSingleFlight(t *testing.T) {
 	defer srv.Close()
 
 	path := tempAuthTOML(t, "old-at", "old-rt")
-	c, err := NewCredential(path, quietLogger())
+	c, err := NewCredential(path, path+".json", quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -188,7 +191,7 @@ func TestConcurrentRefreshSingleFlight(t *testing.T) {
 // mtime 热加载：官方 CLI 改写 auth.toml 后，下一次 Headers() 即跟随新 token。
 func TestMtimeHotReload(t *testing.T) {
 	path := tempAuthTOML(t, "at-1", "rt-1")
-	c, err := NewCredential(path, quietLogger())
+	c, err := NewCredential(path, path+".json", quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,7 +220,7 @@ func TestMtimeHotReload(t *testing.T) {
 // 读坏（非法 UTF-8 / 解析不出键）时保留内存凭据，不清空。
 func TestCorruptFileKeepsMemoryCreds(t *testing.T) {
 	path := tempAuthTOML(t, "good-at", "good-rt")
-	c, err := NewCredential(path, quietLogger())
+	c, err := NewCredential(path, path+".json", quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +235,7 @@ func TestCorruptFileKeepsMemoryCreds(t *testing.T) {
 
 // 文件缺失 → ErrNotLoggedIn（Python 的 NotLoggedInError）
 func TestMissingFileNotLoggedIn(t *testing.T) {
-	if _, err := NewCredential(filepath.Join(t.TempDir(), "nope.toml"), quietLogger()); err != ErrNotLoggedIn {
+	if _, err := NewCredential(filepath.Join(t.TempDir(), "nope.toml"), filepath.Join(t.TempDir(), "nope.json"), quietLogger()); err != ErrNotLoggedIn {
 		t.Errorf("err=%v，期望 ErrNotLoggedIn", err)
 	}
 }
@@ -250,7 +253,7 @@ func TestIsExpiredMargin(t *testing.T) {
 	for _, tc := range cases {
 		path := filepath.Join(t.TempDir(), "auth.toml")
 		writeCredsFile(t, path, "at", "rt", time.Now().Unix()-tc.createdAgo, "")
-		c, err := NewCredential(path, quietLogger())
+		c, err := NewCredential(path, path+".json", quietLogger())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -412,7 +415,7 @@ func TestOAuthPollFlowAgainstFakeACS(t *testing.T) {
 	if err := SaveCredentials(path, creds.ToSaveCreds()); err != nil {
 		t.Fatal(err)
 	}
-	c, err := NewCredential(path, quietLogger())
+	c, err := NewCredential(path, path+".json", quietLogger())
 	if err != nil {
 		t.Fatal(err)
 	}

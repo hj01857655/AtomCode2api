@@ -74,7 +74,7 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 }
 
 // adminRefresh POST /admin/api/refresh-token：强制刷新当前凭据（诊断页用）。
-// Refresh 内部把新 token 原子写回 auth.toml（401 自续期走同一条路）。
+// Refresh 产出的新凭据落网关独立凭据文件 auth.json（不再回写 auth.toml）。
 func (s *Server) adminRefresh(w http.ResponseWriter, r *http.Request) {
 	if !s.guard(w, r) {
 		return
@@ -83,5 +83,5 @@ func (s *Server) adminRefresh(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadGateway, map[string]any{"ok": false, "message": err.Error()})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "已刷新并写回 auth.toml"})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "已刷新（auth.json）"})
 }
