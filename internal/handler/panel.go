@@ -73,6 +73,31 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// adminClaim POST /admin/api/claim：按 Max → Pro → Lite 级联领取免费 CodingPlan。
+// ?preview=1 只查状态不领取。幂等——已持有（duplicate）不会重复领。
+func (s *Server) adminClaim(w http.ResponseWriter, r *http.Request) {
+	if !s.guard(w, r) {
+		return
+	}
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	if r.URL.Query().Get("preview") == "1" {
+		st := s.Con.Status(s)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "preview": true, "status": st})
+		return
+	}
+	res := s.Con.ClaimBest(s)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"ok":     res.OK,
+		"tier":   res.Tier,
+		"plan":   res.Plan,
+		"held":   res.Held,
+		"message": res.Message,
+	})
+}
+
 // adminRefresh POST /admin/api/refresh-token：强制刷新当前凭据（诊断页用）。
 // Refresh 产出的新凭据落网关独立凭据文件 auth.json（不再回写 auth.toml）。
 func (s *Server) adminRefresh(w http.ResponseWriter, r *http.Request) {

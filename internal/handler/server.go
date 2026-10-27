@@ -152,6 +152,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/admin", s.servePanel)
 	mux.HandleFunc("/admin/api/overview", s.overview)
 	mux.HandleFunc("/admin/api/refresh-token", s.adminRefresh)
+	mux.HandleFunc("/admin/api/claim", s.adminClaim)
 	return mux
 }
 

@@ -34,27 +34,100 @@ func New() *Client {
 
 const controlBase = "https://api.gitcode.com/api/v5/coding-plan"
 
-// ClaimPlan 领取 CodingPlan Lite-体验版（幂等，启动时调一次）。失败不致命。
-func (c *Client) ClaimPlan(cred upstream.Cred) {
-	body, _ := json.Marshal(map[string]string{"plan_type": "Lite"})
+// claimTiers 领取优先级：高到低级联，命中即停。
+// 社区脚本 L0NE-6/AtomCode-Daily 口径（Max → Pro → Lite）。
+var claimTiers = []string{"Max", "Pro", "Lite"}
+
+// ClaimResult 一次领取的结果（面板逐档展示）。
+type ClaimResult struct {
+	Tier    string `json:"tier"`
+	OK      bool   `json:"ok"`
+	Held    bool   `json:"held"` // 已持有该档（无变化），停止级联
+	Plan    string `json:"plan,omitempty"`
+	PlanType string `json:"plan_type,omitempty"`
+	Message string `json:"message"`
+}
+
+// ClaimBest 按 Max → Pro → Lite 级联领取，命中即停。
+//
+// 幂等判据是 plan_type 而非 duplicate：实测（2026-10-27）已持有套餐时上游
+// 返回 {"success":true,"duplicate":false,"message":"领取成功","plan_type":"Lite-beta"}，
+// duplicate 恒为 false，不能用它判断「已领过」。改为先查 status-v2 拿到当前
+// plan_type，领取后比对——一致即视为已持有，避免每天重复刷。
+func (c *Client) ClaimBest(cred upstream.Cred) ClaimResult {
+	before := currentPlanType(c.Status(cred))
+	var last ClaimResult
+	for _, tier := range claimTiers {
+		res := c.ClaimTier(cred, tier)
+		if res.OK {
+			if before != "" && res.PlanType == before {
+				res.Held = true
+				res.Message = "已持有 " + res.Plan + "（无变化），无需重复领取"
+			}
+			return res
+		}
+		last = res
+	}
+	if last.Message == "" {
+		last.Message = "三档均未领取（上游未说明原因）"
+	}
+	return last
+}
+
+// currentPlanType 从 status-v2 里取当前持有的 plan_type（取不到返回空串）。
+func currentPlanType(status map[string]any) string {
+	if status == nil {
+		return ""
+	}
+	free := asMap(status["codingplan_free"])
+	return asStr(free["plan_type"])
+}
+
+// ClaimTier 领取指定档位。返回结构化结果，不写日志（由调用方决定）。
+func (c *Client) ClaimTier(cred upstream.Cred, tier string) ClaimResult {
+	res := ClaimResult{Tier: tier}
+	body, _ := json.Marshal(map[string]string{"plan_type": tier})
 	resp, err := c.do(http.MethodPost, c.Base+"/claim-v2", cred.Headers(), body)
 	if err != nil {
-		slog.Warn("[claim] 失败", slog.String("err", err.Error()))
-		return
+		res.Message = "请求失败: " + err.Error()
+		return res
 	}
 	defer resp.Body.Close()
-	var data map[string]any
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	var data map[string]any
 	_ = json.Unmarshal(raw, &data)
+	res.Plan = asStr(data["plan_name"])
+	res.PlanType = asStr(data["plan_type"])
+	res.Message = firstNonEmptyStr(asStr(data["message"]), asStr(data["msg"]))
 	switch {
-	case truthy(data["success"]):
-		slog.Info("[claim] 领取成功", slog.String("plan_name", asStr(data["plan_name"])),
-			slog.String("有效期", "7 天后"))
 	case truthy(data["duplicate"]):
-		slog.Info("[claim] 已领取", slog.String("plan_name", asStr(data["plan_name"])))
+		// 兼容上游未来真的返回 duplicate 的情况。
+		res.OK, res.Held = true, true
+		if res.Message == "" {
+			res.Message = "已持有 " + tier + " 档套餐，无需重复领取"
+		}
+	case truthy(data["success"]):
+		res.OK = true
+		if res.Message == "" {
+			res.Message = "已领取 " + tier + " 档免费套餐"
+		}
 	default:
-		slog.Info("[claim] 返回", slog.String("data", string(raw)))
+		if res.Message == "" {
+			res.Message = "未领取（HTTP " + itoa(resp.StatusCode) + "）"
+		}
 	}
+	return res
+}
+
+// ClaimPlan 启动时的自动领取：级联领一次并记日志。失败不致命。
+func (c *Client) ClaimPlan(cred upstream.Cred) {
+	res := c.ClaimBest(cred)
+	if res.OK {
+		slog.Info("[claim] 领取完成", slog.String("tier", res.Tier),
+			slog.String("plan", res.Plan), slog.String("msg", res.Message))
+		return
+	}
+	slog.Warn("[claim] 未领取", slog.String("tier", res.Tier), slog.String("msg", res.Message))
 }
 
 // Status GET /status-v2?plan_type=Lite；失败返回 nil（对应 Python 的 except → None）。
@@ -151,3 +224,14 @@ func trunc(s string, n int) string {
 	}
 	return s[:n]
 }
+
+func firstNonEmptyStr(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func itoa(n int) string { return fmt.Sprintf("%d", n) }

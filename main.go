@@ -70,6 +70,22 @@ func main() {
 		s.SetCred(cred)
 		s.Con.ClaimPlan(s)
 		printStatus(s)
+
+		// 每日自动领取免费 CodingPlan（社区叫签到，实为 claim-v2）。
+		// 幂等——已持有（duplicate）与领取失败都只记日志。ATOMCODE_AUTO_CLAIM=0 关闭。
+		if os.Getenv("ATOMCODE_AUTO_CLAIM") != "0" {
+			go func() {
+				for range time.Tick(24 * time.Hour) {
+					res := s.Con.ClaimBest(s)
+					if res.OK {
+						logger.Info("[claim] 每日领取", slog.String("tier", res.Tier),
+							slog.String("plan", res.Plan), slog.String("msg", res.Message))
+					} else {
+						logger.Warn("[claim] 每日领取未成功", slog.String("msg", res.Message))
+					}
+				}
+			}()
+		}
 	}
 
 	addr := fmt.Sprintf("%s:%d", cfg.Host, cfg.Port)

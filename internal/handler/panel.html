@@ -92,8 +92,17 @@ async function load(){
   ${(o.models||[]).map(m=>`<tr><td class="mono">${esc(m.id)}</td><td class="dim">${esc(m.owned_by||"—")}</td></tr>`).join("")||'<tr><td colspan="2" class="dim">无（未登录或目录拉取失败）</td></tr>'}</table></div>`;
   $("#vDiag").innerHTML=`
   <div class="card"><h3>健康检查</h3><button class="ghost" onclick="doHealth(this)">GET /health</button> <span id="hpOut"></span></div>
-  <div class="card"><h3>凭据</h3><button onclick="doRefresh(this)">刷新令牌</button> <span id="rfOut"></span></div>`;
+  <div class="card"><h3>凭据</h3><button onclick="doRefresh(this)">刷新令牌</button> <span id="rfOut"></span></div>
+  <div class="card"><h3>免费套餐领取 <span class="dim">（每日自动跑一次；Max→Pro→Lite 级联，已持有不会重复领）</span></h3>
+  <button class="ghost" onclick="doClaim(this,1)">只看状态</button>
+  <button onclick="doClaim(this,0)">立即领取</button> <span id="clOut"></span></div>`;
 }
+async function doClaim(btn,preview){btn.disabled=true;
+  $("#clOut").textContent=preview?"查询中…":"领取中…";
+  const r=await POST("/admin/api/claim"+(preview?"?preview=1":""));
+  if(preview){$("#clOut").innerHTML=`<span class="dim">${esc(JSON.stringify(r.status||r))}</span>`}
+  else{$("#clOut").innerHTML=`<span class="${r.ok?"ok":"warn"}">${esc(r.tier||"")}：${esc(r.message||"")}${r.plan?"（"+esc(r.plan)+"）":""}</span>`}
+  btn.disabled=false}
 async function doRefresh(btn){btn.disabled=true;const r=await POST("/admin/api/refresh-token");
   $("#rfOut").innerHTML=`<span class="${r.ok?"ok":"bad"}">${esc(r.message||"")}</span>`;btn.disabled=false;if(r.ok)load()}
 async function doHealth(btn){btn.disabled=true;
