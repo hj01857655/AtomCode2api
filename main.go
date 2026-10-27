@@ -71,7 +71,7 @@ func main() {
 		s.Con.ClaimPlan(s)
 		printStatus(s)
 
-		// 每日自动领取免费 CodingPlan（社区叫签到，实为 claim-v2）。
+		// 每日自动领取免费 CodingPlan。
 		// 幂等——已持有（duplicate）与领取失败都只记日志。ATOMCODE_AUTO_CLAIM=0 关闭。
 		if os.Getenv("ATOMCODE_AUTO_CLAIM") != "0" {
 			go func() {

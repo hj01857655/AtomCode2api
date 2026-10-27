@@ -35,7 +35,6 @@ func New() *Client {
 const controlBase = "https://api.gitcode.com/api/v5/coding-plan"
 
 // claimTiers 领取优先级：高到低级联，命中即停。
-// 社区脚本 L0NE-6/AtomCode-Daily 口径（Max → Pro → Lite）。
 var claimTiers = []string{"Max", "Pro", "Lite"}
 
 // ClaimResult 一次领取的结果（面板逐档展示）。
