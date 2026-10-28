@@ -11,8 +11,7 @@
 // auth.toml 不存在时返回 ErrNotLoggedIn（先跑官方 `atomcode login`，或走网关 GET /login）。
 //
 // 关于签名：llm-api.atomgit.com 端点强制 X-AtomCode-* 签名（2026-10-28 抓包实证，
-// 算法已逐字节还原，见 AtomCode/signing/ 与 docs/atomcode-signing-v1.md；此前
-// “任意 UA 均 403、网关不可用”的结论系缺签名所致，已作废）。本网关走
+// 算法已逐字节还原，见 AtomCode/signing/ 与 docs/atomcode-signing-v1.md）。本网关走
 // api-ai.gitcode.com + 中性 UA，该端点不强制签名，故暂无 signer 模块；
 // 若改走 llm-api.atomgit.com，按 signing/atomgit_sign.py 产出 5 个头即可。
 package lanes

@@ -122,7 +122,7 @@ Go 参考实现见 [`../signing/signing_ref.go`](../signing/signing_ref.go)（st
 
 ### 端点事实
 
-- `llm-api.atomgit.com`（官方默认端点）：**强制**签名，缺签名一律 403（此前「任意 UA 均 403、网关不可用」系缺签名所致，已作废）。
+- `llm-api.atomgit.com`（官方默认端点）：**强制**签名，缺签名一律 403。
 - `api-ai.gitcode.com`（本网关实际走的端点）：实测**不强制**签名，仅禁止 `atomcode/*` UA。
 - 本网关走 `api-ai.gitcode.com + 中性 UA`，故无 signer 模块（凭据装载见 `internal/lanes/auth.go`）。
 
